@@ -179,6 +179,7 @@ class Batcher(Generic[ResponseT, CompletedBatchInfoT]):
         # All conditions are met. Send it
 
         batch_requests = self._next_batch
+        logger.info(f"Sending batch of {len(batch_requests)} requests")
         self._next_batch = None
         self._next_batch_aggregate_size = None
         self.next_batch_timeout = None
