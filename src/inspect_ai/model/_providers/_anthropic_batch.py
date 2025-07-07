@@ -77,6 +77,24 @@ class AnthropicBatcher(Batcher[Message, CompletedBatchInfo]):
     async def _check_batch(self, batch: Batch[Message]) -> CompletedBatchInfo | None:
         batch_info = await self.client.messages.batches.retrieve(batch.id)
 
+        # Only show non-zero counts
+        counts = []
+        if batch_info.request_counts.processing > 0:
+            counts.append(f"processing={batch_info.request_counts.processing}")
+        if batch_info.request_counts.expired > 0:
+            counts.append(f"expired={batch_info.request_counts.expired}")
+        if batch_info.request_counts.canceled > 0:
+            counts.append(f"canceled={batch_info.request_counts.canceled}")
+        if batch_info.request_counts.errored > 0:
+            counts.append(f"errored={batch_info.request_counts.errored}")
+        if batch_info.request_counts.succeeded > 0:
+            counts.append(f"succeeded={batch_info.request_counts.succeeded}")
+
+        counts_str = ", ".join(counts) if counts else "no active requests"
+        print(
+            f"Checking batch {batch.id}: {batch_info.processing_status} ({counts_str})"
+        )
+
         # We don't need any extra completion info beyond the True since we
         # retrieve the results directly via the sdk given the batch id.
         return True if batch_info.processing_status == "ended" else None

@@ -94,9 +94,8 @@ class Batcher(Generic[ResponseT, CompletedBatchInfoT]):
         while self._inflight_batches or self._intake_queue or self._next_batch:
             await self._check_inflight_batches()
 
-            self._process_intake_queue()
-
-            await self._maybe_send_next_batch()
+            while await self._process_intake_queue():
+                pass
 
             await anyio.sleep(self._tick)
 
@@ -137,19 +136,17 @@ class Batcher(Generic[ResponseT, CompletedBatchInfoT]):
                 # notifying remaining requests
                 pass
 
-    def _process_intake_queue(self) -> None:
-        """Move requests from intake queue to next batch if they fit."""
-        if not self._intake_queue:
-            return
-
-        # Initialize next batch if it doesn't exist
-        if self._next_batch is None:
-            self._next_batch = []
-            self._next_batch_aggregate_size = None
-            self.next_batch_timeout = time.time() + self._send_delay
-
+    async def _process_intake_queue(self) -> bool:
+        """Process intake queue and send next batch if conditions are met."""
         # Process intake queue, moving requests that fit into next batch
         while self._intake_queue:
+            # Move requests from intake queue to next batch if they fit
+            # Initialize next batch if it doesn't exist
+            if self._next_batch is None:
+                self._next_batch = []
+                self._next_batch_aggregate_size = None
+                self.next_batch_timeout = time.time() + self._send_delay
+
             request = self._intake_queue[0]  # Peek at the first request
             new_size = self._does_request_fit_in_batch(
                 request, self._next_batch, self._next_batch_aggregate_size
@@ -159,11 +156,15 @@ class Batcher(Generic[ResponseT, CompletedBatchInfoT]):
                 request = self._intake_queue.popleft()
                 self._next_batch.append(request)
                 self._next_batch_aggregate_size = new_size
+                # This is for debugging purposes. It allows me to artificially
+                # force multiple batches
+                if len(self._next_batch) >= self._batch_size:
+                    break
             else:
                 # Stop processing once we find a request that doesn't fit
                 break
 
-    async def _maybe_send_next_batch(self) -> None:
+        # Bail if we're not ready to send the next batch
         if (
             not self._next_batch
             or len(self._inflight_batches) >= self._max_batches
@@ -174,10 +175,13 @@ class Batcher(Generic[ResponseT, CompletedBatchInfoT]):
                 )
             )
         ):
-            return
+            # TODO: TESTING ONLY. DON'T MERGE
+            print(
+                f"Not sending batch: pending batch size: {len(self._next_batch or [])} inflight={len(self._inflight_batches)}, "
+            )
+            return False
 
         # All conditions are met. Send it
-
         batch_requests = self._next_batch
         self._next_batch = None
         self._next_batch_aggregate_size = None
@@ -185,12 +189,13 @@ class Batcher(Generic[ResponseT, CompletedBatchInfoT]):
 
         batch_id = await self._safe_create_batch(batch_requests)
         if batch_id is None:
-            return
+            return False
 
         self._inflight_batches[batch_id] = Batch(
             id=batch_id,
             requests={request.custom_id: request for request in batch_requests},
         )
+        return True
 
     # These _safe_* methods are intended to wrap the abstract methods with the appropriate
     # error handling logic consistent with the batch algorithm. This allows the
@@ -202,11 +207,12 @@ class Batcher(Generic[ResponseT, CompletedBatchInfoT]):
         self, batch: list[BatchRequest[ResponseT]]
     ) -> str | None:
         try:
-            return await self._create_batch(batch)
+            result = await self._create_batch(batch)
+            print(f"Created batch {result} with {len(batch)} requests")
+            return result
         except Exception as e:
-            logger.error(
-                f"Error creating batch, failing all {len(batch)} requests in batch",
-                exc_info=e,
+            print(
+                f"Error creating batch, failing all {len(batch)} requests in batch. Error: {e}"
             )
             await self._fail_all_requests(batch, e)
             return None
@@ -273,10 +279,13 @@ class Batcher(Generic[ResponseT, CompletedBatchInfoT]):
 
         if current_size is None:
             current_size = sum(
-                len(json.dumps(sanitize_notgiven(req.request))) for req in batch
+                len(json.dumps(sanitize_notgiven(req.request), separators=(",", ":")))
+                for req in batch
             )
 
-        new_size = current_size + len(json.dumps(sanitize_notgiven(request.request)))
+        new_size = current_size + len(
+            json.dumps(sanitize_notgiven(request.request), separators=(",", ":"))
+        )
 
         # Leave 5% buffer
         return new_size if new_size < self.max_batch_size_bytes * 0.95 else None
