@@ -188,8 +188,6 @@ class Batcher(Generic[ResponseT, CompletedBatchInfoT]):
         self.next_batch_timeout = None
 
         batch_id = await self._safe_create_batch(batch_requests)
-        if batch_id is None:
-            return False
 
         self._inflight_batches[batch_id] = Batch(
             id=batch_id,
@@ -203,9 +201,7 @@ class Batcher(Generic[ResponseT, CompletedBatchInfoT]):
     # Any exception that escapes a _safe_* method should be considered a coding
     # error and bring down the eval.
 
-    async def _safe_create_batch(
-        self, batch: list[BatchRequest[ResponseT]]
-    ) -> str | None:
+    async def _safe_create_batch(self, batch: list[BatchRequest[ResponseT]]) -> str:
         try:
             result = await self._create_batch(batch)
             print(f"Created batch {result} with {len(batch)} requests")
@@ -215,7 +211,7 @@ class Batcher(Generic[ResponseT, CompletedBatchInfoT]):
                 f"Error creating batch, failing all {len(batch)} requests in batch. Error: {e}"
             )
             await self._fail_all_requests(batch, e)
-            return None
+            raise
 
     async def _safe_check_batch(
         self, batch: Batch[ResponseT]

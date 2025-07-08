@@ -1,3 +1,4 @@
+import random
 from typing import TypeAlias, cast
 
 import httpx
@@ -27,8 +28,10 @@ from anthropic.types.message_create_params import MessageCreateParamsNonStreamin
 from anthropic.types.messages.batch_create_params import (
     Request as AnthropicBatchRequest,
 )
+from tenacity import retry
 
 from inspect_ai.model._generate_config import BatchConfig
+from inspect_ai.model._retry import ModelRetryConfig
 
 from .util.batch import (
     Batch,
@@ -45,37 +48,53 @@ class AnthropicBatcher(Batcher[Message, CompletedBatchInfo]):
         self,
         client: AsyncAnthropic | AsyncAnthropicBedrock | AsyncAnthropicVertex,
         config: BatchConfig,
+        retry_config: ModelRetryConfig,
     ):
         super().__init__(
             config,
             max_batch_request_count=100000,
             max_batch_size_mb=256,
         )
-        self.client = client
+        self._client = client
+        self._retry_config = retry_config
 
     async def _create_batch(self, batch: list[BatchRequest[Message]]) -> str:
-        requests: list[AnthropicBatchRequest] = []
-        extra_headers: dict[str, str] = {}
-        for request in batch:
-            extra_headers = request.request.pop("extra_headers", {})
-            request_id = extra_headers.pop(HttpxHooks.REQUEST_ID_HEADER, None)
-            if request_id is not None:
-                request.custom_id = request_id
-            requests.append(
-                AnthropicBatchRequest(
-                    custom_id=request.custom_id,
-                    params=cast(MessageCreateParamsNonStreaming, request.request),
+        @retry(**self._retry_config)
+        async def _create() -> str:
+            requests: list[AnthropicBatchRequest] = []
+            extra_headers: dict[str, str] = {}
+            for request in batch:
+                extra_headers = request.request.pop("extra_headers", {})
+                request_id = extra_headers.pop(HttpxHooks.REQUEST_ID_HEADER, None)
+                if request_id is not None:
+                    request.custom_id = request_id
+                requests.append(
+                    AnthropicBatchRequest(
+                        custom_id=request.custom_id,
+                        params=cast(MessageCreateParamsNonStreaming, request.request),
+                    )
                 )
-            )
 
-        batch_info = await self.client.messages.batches.create(
-            requests=requests,
-            extra_headers=extra_headers or None,
-        )
-        return batch_info.id
+            # TODO: DON'T MERGE
+            # Randomly raise an error for 1 in 5 requests
+            if random.randint(1, 3) == 1:
+                raise APITimeoutError(
+                    request=httpx.Request(
+                        method="POST",
+                        url="https://api.anthropic.com/v1/messages/batches",
+                    )
+                )
+
+            batch_info = await self._client.messages.batches.create(
+                requests=requests,
+                extra_headers=extra_headers or None,
+            )
+            return batch_info.id
+
+        return await _create()
 
     async def _check_batch(self, batch: Batch[Message]) -> CompletedBatchInfo | None:
-        batch_info = await self.client.messages.batches.retrieve(batch.id)
+        batch_info = await self._client.messages.batches.retrieve(batch.id)
 
         # Only show non-zero counts
         counts = []
@@ -106,7 +125,7 @@ class AnthropicBatcher(Batcher[Message, CompletedBatchInfo]):
     ) -> None:
         import anthropic
 
-        async for result in await self.client.messages.batches.results(batch.id):
+        async for result in await self._client.messages.batches.results(batch.id):
             custom_id = result.custom_id
             batch_request = batch.requests.pop(custom_id)
 
