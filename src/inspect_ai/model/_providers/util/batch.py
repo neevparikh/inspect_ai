@@ -92,13 +92,14 @@ class Batcher(Generic[ResponseT, CompletedBatchInfoT]):
 
     async def _batch_worker(self) -> None:
         while self._inflight_batches or self._intake_queue or self._next_batch:
-            await self._check_inflight_batches()
-
             self._process_intake_queue()
 
             await self._maybe_send_next_batch()
 
-            await anyio.sleep(self._tick)
+            if not self._intake_queue:
+                await self._check_inflight_batches()
+                logger.info(f"Current {len(self._inflight_batches)} batches")
+                await anyio.sleep(self._tick)
 
         self._is_batch_worker_running = False
 

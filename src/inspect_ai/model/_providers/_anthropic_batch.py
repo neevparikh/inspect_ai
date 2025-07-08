@@ -121,7 +121,14 @@ class AnthropicBatcher(Batcher[Message, CompletedBatchInfo]):
                             error_class = anthropic.InternalServerError
                     response = error_class(
                         message=message,
-                        response=httpx.Response(status_code=500, text=message),
+                        response=httpx.Response(
+                            status_code=500,
+                            text=message,
+                            request=httpx.Request(
+                                method="POST",
+                                url="https://api.anthropic.com/v1/messages/batches",
+                            ),
+                        ),
                         body=None,
                     )
                     response.response.status_code = response.status_code
