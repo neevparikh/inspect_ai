@@ -83,11 +83,18 @@ class OpenAIBatcher(Batcher[ChatCompletion, CompletedBatchInfo]):
 
     async def _check_batch(
         self, batch: Batch[ChatCompletion]
-    ) -> CompletedBatchInfo | None:
+    ) -> tuple[int, int, (CompletedBatchInfo | None)]:
         batch_info = await self.client.batches.retrieve(batch.id)
 
+        # TODO: Is it bogus to return 0, 0 when request_counts isn't available
+        completed, failed = (
+            (batch_info.request_counts.completed, batch_info.request_counts.failed)
+            if batch_info.request_counts
+            else (0, 0)
+        )
+
         if batch_info.status not in {"completed", "failed", "cancelled", "expired"}:
-            return None
+            return (completed, failed, None)
 
         # The doc suggests that `output_file_id` will only be populated if the batch
         # as a whole reached the `completed` state. This means that if all but
@@ -100,7 +107,11 @@ class OpenAIBatcher(Batcher[ChatCompletion, CompletedBatchInfo]):
             if file_id is not None
         ]
 
-        return {"result_uris": batch_file_ids} if batch_file_ids else None
+        return (
+            completed,
+            failed,
+            {"result_uris": batch_file_ids} if batch_file_ids else None,
+        )
 
     async def _handle_batch_result(
         self,
