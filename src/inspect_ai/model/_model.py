@@ -24,13 +24,7 @@ from pydantic_core import to_jsonable_python
 from tenacity import (
     RetryCallState,
     retry,
-    retry_if_exception,
-    stop_after_attempt,
-    stop_after_delay,
-    stop_never,
-    wait_exponential_jitter,
 )
-from tenacity.stop import StopBaseT
 
 from inspect_ai._util.constants import (
     DEFAULT_MAX_CONNECTIONS,
