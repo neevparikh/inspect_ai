@@ -19,6 +19,7 @@ from inspect_ai.model._generate_config import BatchConfig, GenerateConfig
 DEFAULT_BATCH_TICK = 15
 DEFAULT_SEND_DELAY = DEFAULT_BATCH_TICK
 DEFAULT_MAX_BATCHES = 50
+MAX_CONSECUTIVE_CHECK_FAILURES = 1000
 
 logger = getLogger(__name__)
 
@@ -242,9 +243,9 @@ class Batcher(Generic[ResponseT, CompletedBatchInfoT]):
         except Exception as e:
             logger.error(f"Error checking batch {batch.id}", exc_info=e)
             batch.consecutive_check_failure_count += 1
-            if batch.consecutive_check_failure_count >= 3:
+            if batch.consecutive_check_failure_count >= MAX_CONSECUTIVE_CHECK_FAILURES:
                 logger.error(
-                    f"Batch {batch.id} failed after 3 retries, failing all {len(batch.requests)} requests in batch",
+                    f"Batch {batch.id} failed after {MAX_CONSECUTIVE_CHECK_FAILURES} retries, failing all {len(batch.requests)} requests in batch",
                 )
                 await self._fail_all_requests([*batch.requests.values()], e)
                 del self._inflight_batches[batch.id]
