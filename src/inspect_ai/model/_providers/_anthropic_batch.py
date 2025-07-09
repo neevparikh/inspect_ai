@@ -1,4 +1,3 @@
-import random
 from typing import AsyncIterator, TypeAlias, cast
 
 import httpx
@@ -76,15 +75,6 @@ class AnthropicBatcher(Batcher[Message, CompletedBatchInfo]):
                     )
                 )
 
-            # TODO: DON'T MERGE
-            if random.randint(1, 4) == 1:
-                raise APITimeoutError(
-                    request=httpx.Request(
-                        method="POST",
-                        url="https://api.anthropic.com/v1/messages/batches",
-                    )
-                )
-
             batch_info = await self._client.messages.batches.create(
                 requests=requests,
                 extra_headers=extra_headers or None,
@@ -113,15 +103,6 @@ class AnthropicBatcher(Batcher[Message, CompletedBatchInfo]):
     ) -> dict[str, Message | Exception]:
         @retry(**self._retry_config)
         async def _results() -> AsyncIterator[MessageBatchIndividualResponse]:
-            # TODO: DON'T MERGE
-            if random.randint(1, 2) == 1:
-                raise APITimeoutError(
-                    request=httpx.Request(
-                        method="POST",
-                        url="https://api.anthropic.com/v1/messages/batches",
-                    )
-                )
-
             return await self._client.messages.batches.results(batch.id)
 
         return {
