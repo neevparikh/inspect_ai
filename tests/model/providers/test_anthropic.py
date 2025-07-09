@@ -16,6 +16,7 @@ from anthropic.types.messages import (
     MessageBatchSucceededResult,
     batch_create_params,
 )
+from tenacity import RetryCallState
 from test_helpers.utils import skip_if_no_anthropic
 
 from inspect_ai._util import eval_task_group
@@ -30,9 +31,21 @@ from inspect_ai.model._generate_config import BatchConfig
 from inspect_ai.model._providers._anthropic_batch import AnthropicBatcher
 from inspect_ai.model._providers.anthropic import AnthropicAPI
 from inspect_ai.model._providers.util.batch import BatchRequest
+from inspect_ai.model._retry import model_retry_config
 
 if TYPE_CHECKING:
     from pytest_mock import MockerFixture
+
+
+def _should_retry(ex: BaseException) -> bool:
+    return True
+
+
+def _log_model_retry(model_name: str, retry_state: RetryCallState) -> None:
+    pass
+
+
+retry_config = model_retry_config("NA", 3, 60, _should_retry, _log_model_retry)
 
 
 @pytest.mark.anyio
@@ -269,6 +282,7 @@ def test_batcher_get_request_failed_error(mocker: MockerFixture):
     batcher = AnthropicBatcher(
         client=AsyncAnthropic(api_key="test-key"),
         config=BatchConfig(size=10, send_delay=1.0, tick=0.01),
+        retry_config=retry_config,
     )
     send_stream, _ = anyio.create_memory_object_stream[Message | Exception]()
     error = batcher._get_request_failed_error(  # pyright: ignore[reportPrivateUsage]

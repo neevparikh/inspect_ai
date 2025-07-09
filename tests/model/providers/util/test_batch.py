@@ -56,13 +56,17 @@ class FakeBatcher(Batcher[str, CompletedBatchInfo]):
     async def _create_batch(self, batch: list[BatchRequest[str]]) -> str:
         return await self.mock_create_batch(batch)
 
-    def _stub_check_batch(self, batch: Batch[str]) -> CompletedBatchInfo | None:
+    def _stub_check_batch(
+        self, batch: Batch[str]
+    ) -> tuple[int, int, (CompletedBatchInfo | None)]:
         self._batch_check_counts[batch.id] -= 1
         if self._batch_check_counts[batch.id] > 0:
-            return None
-        return {"result_uris": [f"result-uri-{batch.id}"]}
+            return (665, 666, None)
+        return (665, 666, {"result_uris": [f"result-uri-{batch.id}"]})
 
-    async def _check_batch(self, batch: Batch[str]) -> CompletedBatchInfo | None:
+    async def _check_batch(
+        self, batch: Batch[str]
+    ) -> tuple[int, int, (CompletedBatchInfo | None)]:
         return await self.mock_check_batch(batch)
 
     async def _stub_handle_batch_result(
@@ -184,7 +188,10 @@ async def test_batcher_safe_check_batch(
     else:
         batcher.mock_check_batch.return_value = check_call_result
 
-    completion_info = await batcher._safe_check_batch(batch)  # pyright: ignore[reportPrivateUsage]
+    result = await batcher._safe_check_batch(batch)  # pyright: ignore[reportPrivateUsage]
+    completed, failed, completion_info = (
+        (result[0], result[1], result[2]) if result else (0, 0, None)
+    )
 
     batcher.mock_check_batch.assert_awaited_once_with(batch)
     if expected_error:
