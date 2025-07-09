@@ -1,5 +1,5 @@
 import random
-from typing import TypeAlias, cast
+from typing import AsyncIterator, TypeAlias, cast
 
 import httpx
 from anthropic import (
@@ -25,6 +25,7 @@ from anthropic.types import (
     PermissionError as AnthropicPermissionError,
 )
 from anthropic.types.message_create_params import MessageCreateParamsNonStreaming
+from anthropic.types.messages import MessageBatchIndividualResponse
 from anthropic.types.messages.batch_create_params import (
     Request as AnthropicBatchRequest,
 )
@@ -76,8 +77,7 @@ class AnthropicBatcher(Batcher[Message, CompletedBatchInfo]):
                 )
 
             # TODO: DON'T MERGE
-            # Randomly raise an error for 1 in 5 requests
-            if random.randint(1, 3) == 1:
+            if random.randint(1, 4) == 1:
                 raise APITimeoutError(
                     request=httpx.Request(
                         method="POST",
@@ -93,30 +93,18 @@ class AnthropicBatcher(Batcher[Message, CompletedBatchInfo]):
 
         return await _create()
 
-    async def _check_batch(self, batch: Batch[Message]) -> CompletedBatchInfo | None:
+    async def _check_batch(
+        self, batch: Batch[Message]
+    ) -> tuple[int, int, (CompletedBatchInfo | None)]:
         batch_info = await self._client.messages.batches.retrieve(batch.id)
 
-        # Only show non-zero counts
-        counts = []
-        if batch_info.request_counts.processing > 0:
-            counts.append(f"processing={batch_info.request_counts.processing}")
-        if batch_info.request_counts.expired > 0:
-            counts.append(f"expired={batch_info.request_counts.expired}")
-        if batch_info.request_counts.canceled > 0:
-            counts.append(f"canceled={batch_info.request_counts.canceled}")
-        if batch_info.request_counts.errored > 0:
-            counts.append(f"errored={batch_info.request_counts.errored}")
-        if batch_info.request_counts.succeeded > 0:
-            counts.append(f"succeeded={batch_info.request_counts.succeeded}")
-
-        counts_str = ", ".join(counts) if counts else "no active requests"
-        print(
-            f"Checking batch {batch.id}: {batch_info.processing_status} ({counts_str})"
+        return (
+            batch_info.request_counts.succeeded + batch_info.request_counts.canceled,
+            batch_info.request_counts.expired + batch_info.request_counts.errored,
+            # We don't need any extra completion info beyond the True since we
+            # retrieve the results directly via the sdk given the batch id.
+            True if batch_info.processing_status == "ended" else None,
         )
-
-        # We don't need any extra completion info beyond the True since we
-        # retrieve the results directly via the sdk given the batch id.
-        return True if batch_info.processing_status == "ended" else None
 
     async def _handle_batch_result(
         self,
@@ -125,7 +113,20 @@ class AnthropicBatcher(Batcher[Message, CompletedBatchInfo]):
     ) -> None:
         import anthropic
 
-        async for result in await self._client.messages.batches.results(batch.id):
+        @retry(**self._retry_config)
+        async def _results() -> AsyncIterator[MessageBatchIndividualResponse]:
+            # TODO: DON'T MERGE
+            if random.randint(1, 2) == 1:
+                raise APITimeoutError(
+                    request=httpx.Request(
+                        method="POST",
+                        url="https://api.anthropic.com/v1/messages/batches",
+                    )
+                )
+
+            return await self._client.messages.batches.results(batch.id)
+
+        async for result in await _results():
             custom_id = result.custom_id
             batch_request = batch.requests.pop(custom_id)
 

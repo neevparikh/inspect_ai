@@ -46,7 +46,9 @@ class BatchRequest(Generic[ResponseT]):
 class Batch(Generic[ResponseT]):
     id: str
     requests: dict[str, BatchRequest[ResponseT]]
-    retry_count: int = 0
+    consecutive_check_failure_count: int = 0
+    completed_count: int = 0
+    failed_count: int = 0
 
 
 class Batcher(Generic[ResponseT, CompletedBatchInfoT]):
@@ -92,6 +94,7 @@ class Batcher(Generic[ResponseT, CompletedBatchInfoT]):
 
     async def _batch_worker(self) -> None:
         while self._inflight_batches or self._intake_queue or self._next_batch:
+            print("Checking inflight batches and processing intake queue")
             await self._check_inflight_batches()
 
             while await self._process_intake_queue():
@@ -110,8 +113,28 @@ class Batcher(Generic[ResponseT, CompletedBatchInfoT]):
                 ]
             )
 
+        total_requests, total_completed, total_failed = functools.reduce(
+            lambda acc, batch: (
+                acc[0] + len(batch.requests),
+                acc[1] + batch.completed_count,
+                acc[2] + batch.failed_count,
+            ),
+            self._inflight_batches.values(),
+            (0, 0, 0),
+        )
+        print(
+            f"Inflight batches: {len(self._inflight_batches)}, "
+            f"pending/completed/failed requests: {total_requests - total_completed - total_failed}/{total_completed}/{total_failed}"
+        )
+
     async def _check_inflight_batch(self, batch: Batch[ResponseT]) -> None:
-        completed_info = await self._safe_check_batch(batch)
+        check_result = await self._safe_check_batch(batch)
+        if not check_result:
+            return
+
+        completed_requests, failed_requests, completed_info = check_result
+        batch.completed_count = completed_requests
+        batch.failed_count = failed_requests
         if completed_info is None:
             return
 
@@ -175,10 +198,6 @@ class Batcher(Generic[ResponseT, CompletedBatchInfoT]):
                 )
             )
         ):
-            # TODO: TESTING ONLY. DON'T MERGE
-            print(
-                f"Not sending batch: pending batch size: {len(self._next_batch or [])} inflight={len(self._inflight_batches)}, "
-            )
             return False
 
         # All conditions are met. Send it
@@ -215,15 +234,15 @@ class Batcher(Generic[ResponseT, CompletedBatchInfoT]):
 
     async def _safe_check_batch(
         self, batch: Batch[ResponseT]
-    ) -> CompletedBatchInfoT | None:
+    ) -> tuple[int, int, (CompletedBatchInfoT | None)] | None:
         try:
             result = await self._check_batch(batch)
-            batch.retry_count = 0
+            batch.consecutive_check_failure_count = 0
             return result
         except Exception as e:
             logger.error(f"Error checking batch {batch.id}", exc_info=e)
-            batch.retry_count += 1
-            if batch.retry_count >= 3:
+            batch.consecutive_check_failure_count += 1
+            if batch.consecutive_check_failure_count >= 3:
                 logger.error(
                     f"Batch {batch.id} failed after 3 retries, failing all {len(batch.requests)} requests in batch",
                 )
@@ -238,19 +257,12 @@ class Batcher(Generic[ResponseT, CompletedBatchInfoT]):
     ) -> None:
         try:
             await self._handle_batch_result(batch, completion_info)
-            batch.retry_count = 0
         except Exception as e:
-            logger.error(
-                f"Error handling batch {batch.id} result {completion_info}",
-                exc_info=e,
+            print(
+                f"Batch {batch.id} failed after retries, failing all {len(batch.requests)} requests in batch",
             )
-            batch.retry_count += 1
-            if batch.retry_count >= 3:
-                logger.error(
-                    f"Batch {batch.id} failed after 3 retries, failing all {len(batch.requests)} requests in batch",
-                )
-                await self._fail_all_requests([*batch.requests.values()], e)
-                batch.requests = {}
+            await self._fail_all_requests([*batch.requests.values()], e)
+            batch.requests = {}
 
     def _does_request_fit_in_batch(
         self,
@@ -291,7 +303,10 @@ class Batcher(Generic[ResponseT, CompletedBatchInfoT]):
         pass
 
     @abstractmethod
-    async def _check_batch(self, batch: Batch[ResponseT]) -> CompletedBatchInfoT | None:
+    async def _check_batch(
+        self, batch: Batch[ResponseT]
+    ) -> tuple[int, int, (CompletedBatchInfoT | None)]:
+        """Returns the number of completed requests, failed requests, and completed batch info if completed"""
         pass
 
     @abstractmethod

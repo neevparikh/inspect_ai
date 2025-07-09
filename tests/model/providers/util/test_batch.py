@@ -176,7 +176,7 @@ async def test_batcher_safe_check_batch(
             )
             for idx in range(10)
         },
-        retry_count=retry_count,
+        consecutive_check_failure_count=retry_count,
     )
     batcher = FakeBatcher(mocker, inflight_batches={batch.id: batch})
     if isinstance(check_call_result, Exception):
@@ -229,7 +229,7 @@ async def test_batcher_safe_handle_batch_result(
     batch = Batch[str](
         id="test-batch-0",
         requests=requests,
-        retry_count=retry_count,
+        consecutive_check_failure_count=retry_count,
     )
     batcher = FakeBatcher(mocker, inflight_batches={batch.id: batch})
     completion_info = CompletedBatchInfo(result_uris=["result-uri-test-batch-0"])
