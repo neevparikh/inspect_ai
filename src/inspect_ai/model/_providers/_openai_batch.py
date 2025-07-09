@@ -1,19 +1,19 @@
 import functools
 import json
+import random
 import tempfile
 from logging import getLogger
 from typing import Any, Literal, TypedDict
 
 import httpx
-from openai import (
-    AsyncOpenAI,
-    InternalServerError,
-)
+from openai import AsyncOpenAI, InternalServerError, RateLimitError
 from openai._types import NOT_GIVEN
 from openai.types.chat import ChatCompletion
+from tenacity import retry
 
 from inspect_ai._util._async import tg_collect
 from inspect_ai.model._generate_config import BatchConfig
+from inspect_ai.model._retry import ModelRetryConfig
 
 from .util.batch import (
     Batch,
@@ -30,56 +30,81 @@ class CompletedBatchInfo(TypedDict):
 
 
 class OpenAIBatcher(Batcher[ChatCompletion, CompletedBatchInfo]):
-    def __init__(self, client: AsyncOpenAI, config: BatchConfig):
+    def __init__(
+        self,
+        client: AsyncOpenAI,
+        config: BatchConfig,
+        retry_config: ModelRetryConfig,
+    ):
         super().__init__(
             config=config,
             max_batch_request_count=50000,
             max_batch_size_mb=200,
         )
         self.client = client
+        self._retry_config = retry_config
 
     async def _create_batch(self, batch: list[BatchRequest[ChatCompletion]]) -> str:
-        # TODO: support other endpoints
-        endpoint: Literal["/v1/chat/completions"] = "/v1/chat/completions"
-        extra_headers: dict[str, str] = {}
-        with tempfile.NamedTemporaryFile(
-            delete=True, suffix=".jsonl", mode="w+b"
-        ) as temp_file:
-            for request in batch:
-                extra_headers = request.request.pop("extra_headers", {})
-                request_id = extra_headers.pop(HttpxHooks.REQUEST_ID_HEADER, None)
-                if request_id is not None:
-                    request.custom_id = request_id
-                temp_file.write(
-                    json.dumps(
-                        {
-                            "custom_id": request.custom_id,
-                            "method": "POST",
-                            "url": endpoint,
-                            "body": {
-                                k: v
-                                for k, v in request.request.items()
-                                if v is not NOT_GIVEN
+        @retry(**self._retry_config)
+        async def _create() -> str:
+            # TODO: support other endpoints
+            endpoint: Literal["/v1/chat/completions"] = "/v1/chat/completions"
+            extra_headers: dict[str, str] = {}
+            with tempfile.NamedTemporaryFile(
+                delete=True, suffix=".jsonl", mode="w+b"
+            ) as temp_file:
+                for request in batch:
+                    extra_headers = request.request.pop("extra_headers", {})
+                    request_id = extra_headers.pop(HttpxHooks.REQUEST_ID_HEADER, None)
+                    if request_id is not None:
+                        request.custom_id = request_id
+                    temp_file.write(
+                        json.dumps(
+                            {
+                                "custom_id": request.custom_id,
+                                "method": "POST",
+                                "url": endpoint,
+                                "body": {
+                                    k: v
+                                    for k, v in request.request.items()
+                                    if v is not NOT_GIVEN
+                                },
                             },
-                        },
-                    ).encode()
-                    + b"\n"
-                )
-            temp_file.flush()
-            temp_file.seek(0)
+                        ).encode()
+                        + b"\n"
+                    )
+                temp_file.flush()
+                temp_file.seek(0)
 
-            batch_file = await self.client.files.create(
-                file=temp_file.file,
-                purpose="batch",
+                batch_file = await self.client.files.create(
+                    file=temp_file.file,
+                    purpose="batch",
+                    extra_headers=extra_headers or None,
+                )
+
+            # TODO: DON'T MERGE
+            if random.randint(1, 4) == 1:
+                raise RateLimitError(
+                    "whoops",
+                    body=None,
+                    response=httpx.Response(
+                        status_code=429,
+                        request=httpx.Request(
+                            method="POST",
+                            url="https://api.anthropic.com/v1/messages/batches",
+                        ),
+                    ),
+                )
+
+            batch_info = await self.client.batches.create(
+                input_file_id=batch_file.id,
+                completion_window="24h",
+                endpoint=endpoint,
                 extra_headers=extra_headers or None,
             )
-        batch_info = await self.client.batches.create(
-            input_file_id=batch_file.id,
-            completion_window="24h",
-            endpoint=endpoint,
-            extra_headers=extra_headers or None,
-        )
-        return batch_info.id
+            return batch_info.id
+
+        return await _create()
 
     async def _check_batch(
         self, batch: Batch[ChatCompletion]
@@ -120,12 +145,16 @@ class OpenAIBatcher(Batcher[ChatCompletion, CompletedBatchInfo]):
     ) -> None:
         result_uris = completion_info["result_uris"]
 
-        await tg_collect(
-            [
-                functools.partial(self._handle_batch_result_file, batch, file_id)
-                for file_id in result_uris
-            ]
-        )
+        @retry(**self._retry_config)
+        async def _results() -> None:
+            await tg_collect(
+                [
+                    functools.partial(self._handle_batch_result_file, batch, file_id)
+                    for file_id in result_uris
+                ]
+            )
+
+        await _results()
 
     async def _handle_batch_result_file(
         self,
