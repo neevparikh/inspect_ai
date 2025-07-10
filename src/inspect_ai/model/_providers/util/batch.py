@@ -349,8 +349,8 @@ def _assess_intake_queue(
 
         # TODO: DO NOT MERGE
         # This is just for debugging to allow breaking into multiple batches
-        if current_count + add_count >= min_request_count:
-            break
+        # if current_count + add_count >= min_request_count:
+        #     break
 
         request_size = len(
             json.dumps(sanitize_notgiven(request.request), separators=(",", ":"))
