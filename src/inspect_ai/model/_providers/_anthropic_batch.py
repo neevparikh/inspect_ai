@@ -125,8 +125,8 @@ class AnthropicBatcher(Batcher[Message, CompletedBatchInfo]):
             return await self._client.messages.batches.results(batch.id)
 
         return {
-            request_response.custom_id: _get_request_response(request_response.result)
-            async for request_response in await _results()
+            individual_response.custom_id: _get_individual_result(individual_response)
+            async for individual_response in await _results()
         }
 
     def _get_request_failed_error(self, request: BatchRequest[Message]) -> Exception:
@@ -144,16 +144,18 @@ class AnthropicBatcher(Batcher[Message, CompletedBatchInfo]):
         )
 
 
-def _get_request_response(result: MessageBatchResult) -> Message | Exception:
+def _get_individual_result(
+    individual_response: MessageBatchIndividualResponse,
+) -> Message | Exception:
     import anthropic
 
-    if result.type == "succeeded":
-        return result.message
-    elif result.type == "errored":
+    if individual_response.result.type == "succeeded":
+        return individual_response.result.message
+    elif individual_response.result.type == "errored":
         # See anthropic._client.AsyncAnthropic._make_status_error
-        message = result.error.error.message
+        message = individual_response.result.error.error.message
         error_class: type[anthropic.APIStatusError]
-        match result.error.error:
+        match individual_response.result.error.error:
             case InvalidRequestError():
                 error_class = anthropic.BadRequestError
             case AuthenticationError():
@@ -179,14 +181,14 @@ def _get_request_response(result: MessageBatchResult) -> Message | Exception:
         )
         response.response.status_code = response.status_code
         return response
-    elif result.type == "canceled":
+    elif individual_response.result.type == "canceled":
         return APIConnectionError(
             request=httpx.Request(
                 method="POST",
                 url="https://api.anthropic.com/v1/messages/batches",
             )
         )
-    elif result.type == "expired":
+    elif individual_response.result.type == "expired":
         return APITimeoutError(
             request=httpx.Request(
                 method="POST",
@@ -194,4 +196,4 @@ def _get_request_response(result: MessageBatchResult) -> Message | Exception:
             )
         )
     else:
-        return TypeError(f"Unknown result type {result.type}")
+        return TypeError(f"Unknown result type {individual_response.result.type}")
