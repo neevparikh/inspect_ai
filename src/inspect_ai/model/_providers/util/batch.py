@@ -4,7 +4,6 @@ import json
 import time
 import uuid
 from abc import abstractmethod
-from collections import deque
 from logging import getLogger
 from typing import Any, Generic, TypeVar
 
@@ -52,6 +51,13 @@ class Batch(Generic[ResponseT]):
     failed_count: int = 0
 
 
+@dataclasses.dataclass
+class PendingBatch(Generic[ResponseT]):
+    timeout: float
+    available_size: int
+    requests: list[BatchRequest[ResponseT]] = dataclasses.field(default_factory=list)
+
+
 class Batcher(Generic[ResponseT, CompletedBatchInfoT]):
     def __init__(
         self,
@@ -60,16 +66,14 @@ class Batcher(Generic[ResponseT, CompletedBatchInfoT]):
         max_batch_size_mb: int,
     ) -> None:
         # self.config = config
-        self.max_batch_request_count = max_batch_request_count
-        self.max_batch_size_bytes = max_batch_size_mb * 1024 * 1024
-        self._batch_size = config.size or DEFAULT_BATCH_SIZE
+        self._max_batch_request_count = max_batch_request_count
+        self._max_batch_size_bytes = max_batch_size_mb * 1024 * 1024
+        self._min_batch_request_count = config.size or DEFAULT_BATCH_SIZE
         self._send_delay = config.send_delay or DEFAULT_SEND_DELAY
         self._tick = config.tick or DEFAULT_BATCH_TICK
         self._max_batches = config.max_batches or DEFAULT_MAX_BATCHES
-        self._intake_queue: deque[BatchRequest[ResponseT]] = deque()
-        self._next_batch: list[BatchRequest[ResponseT]] | None = None
-        self.next_batch_timeout: float | None = None
-        self._next_batch_aggregate_size: int | None = None
+        self._intake_queue: list[BatchRequest[ResponseT]] = []
+        self._next_batch: PendingBatch[ResponseT] | None = None
         self._inflight_batches: dict[str, Batch[ResponseT]] = {}
         self._is_batch_worker_running: bool = False
 
@@ -162,58 +166,40 @@ class Batcher(Generic[ResponseT, CompletedBatchInfoT]):
 
     async def _process_intake_queue(self) -> bool:
         """Process intake queue and send next batch if conditions are met."""
-        # Process intake queue, moving requests that fit into next batch
-        while self._intake_queue:
-            # Move requests from intake queue to next batch if they fit
-            # Initialize next batch if it doesn't exist
-            if self._next_batch is None:
-                self._next_batch = []
-                self._next_batch_aggregate_size = None
-                self.next_batch_timeout = time.time() + self._send_delay
-
-            request = self._intake_queue[0]  # Peek at the first request
-            new_size = self._does_request_fit_in_batch(
-                request, self._next_batch, self._next_batch_aggregate_size
+        if self._next_batch is None:
+            self._next_batch = PendingBatch(
+                time.time() + self._send_delay,
+                int(self._max_batch_size_bytes * 0.95),
             )
-            if new_size is not None:
-                # Remove from intake queue and add to next batch
-                request = self._intake_queue.popleft()
-                self._next_batch.append(request)
-                self._next_batch_aggregate_size = new_size
-                # This is for debugging purposes. It allows me to artificially
-                # force multiple batches
-                if len(self._next_batch) >= self._batch_size:
-                    break
-            else:
-                # Stop processing once we find a request that doesn't fit
-                break
 
-        # Bail if we're not ready to send the next batch
-        if (
-            not self._next_batch
-            or len(self._inflight_batches) >= self._max_batches
-            or (
-                len(self._next_batch) < self._batch_size
-                and not (
-                    self.next_batch_timeout and time.time() > self.next_batch_timeout
-                )
-            )
-        ):
-            return False
-
-        # All conditions are met. Send it
-        batch_requests = self._next_batch
-        self._next_batch = None
-        self._next_batch_aggregate_size = None
-        self.next_batch_timeout = None
-
-        batch_id = await self._safe_create_batch(batch_requests)
-
-        self._inflight_batches[batch_id] = Batch(
-            id=batch_id,
-            requests={request.custom_id: request for request in batch_requests},
+        add_count, new_avail, should_send = _assess_intake_queue(
+            self._intake_queue,
+            self._next_batch,
+            self._min_batch_request_count,
+            self._max_batch_request_count,
         )
-        return True
+
+        if add_count:
+            self._next_batch = PendingBatch(
+                self._next_batch.timeout,
+                new_avail,
+                self._next_batch.requests + self._intake_queue[:add_count],
+            )
+            self._intake_queue = self._intake_queue[add_count:]
+
+        if should_send and len(self._inflight_batches) < self._max_batches:
+            batch_requests = self._next_batch.requests
+            self._next_batch = None
+
+            batch_id = await self._safe_create_batch(batch_requests)
+
+            self._inflight_batches[batch_id] = Batch(
+                id=batch_id,
+                requests={request.custom_id: request for request in batch_requests},
+            )
+            return True
+
+        return False
 
     # These _safe_* methods are intended to wrap the abstract methods with the appropriate
     # error handling logic consistent with the batch algorithm. This allows the
@@ -265,40 +251,6 @@ class Batcher(Generic[ResponseT, CompletedBatchInfoT]):
             await self._fail_all_requests([*batch.requests.values()], e)
             batch.requests = {}
 
-    def _does_request_fit_in_batch(
-        self,
-        request: BatchRequest[ResponseT],
-        batch: list[BatchRequest[ResponseT]],
-        current_size: int | None,
-    ) -> int | None:
-        """
-        Check if a request fits in the batch and return new aggregate size if it does.
-
-        Args:
-            request: The request to check
-            batch: The current batch of requests
-            current_size: The current size of the requests
-
-        Returns:
-            None if the request does NOT fit (no capacity), otherwise the new size
-            of the requests assuming the request is added to the batch
-        """
-        if len(batch) >= self.max_batch_request_count:
-            return None
-
-        if current_size is None:
-            current_size = sum(
-                len(json.dumps(sanitize_notgiven(req.request), separators=(",", ":")))
-                for req in batch
-            )
-
-        new_size = current_size + len(
-            json.dumps(sanitize_notgiven(request.request), separators=(",", ":"))
-        )
-
-        # Leave 5% buffer
-        return new_size if new_size < self.max_batch_size_bytes * 0.95 else None
-
     @abstractmethod
     async def _create_batch(self, batch: list[BatchRequest[ResponseT]]) -> str:
         pass
@@ -323,3 +275,79 @@ class Batcher(Generic[ResponseT, CompletedBatchInfoT]):
     # coding error and will bring down the eval.
     def _get_request_failed_error(self, request: BatchRequest[ResponseT]) -> Exception:
         pass
+
+
+def _assess_intake_queue(
+    intake_queue: list[BatchRequest[ResponseT]],
+    batch: PendingBatch[ResponseT],
+    min_request_count: int,
+    max_request_count: int,
+) -> tuple[int, int, bool]:
+    """Assess the intake queue and determine what should be done with the current batch.
+
+    This function determines two things:
+
+    1. How many (if any) requests from the `intake_queue` can be added to `batch`.
+       This is constrained by `batch.available_size` and `max_batch_request_count`
+       - neither of which can be exceeded.
+
+    2. Whether the resulting/post-add batch should be sent now or not. This will
+       be `True` if the post-add batch is:
+       - full - either request count or bytes
+       - has at least `min_batch_request_count` requests
+       - has waited until `batch.timeout` to send the batch
+
+    At a high level, the algorithm endeavors to add as many requests as possible
+    from the `intake_queue` to the `batch`, while respecting all constraints.
+
+    Args:
+        intake_queue: List of batch requests waiting to be processed
+        batch: Current batch being assembled
+        min_request_count: Minimum number of requests before sending
+        max_request_count: Maximum number of requests allowed in a batch
+
+    Returns:
+        A tuple of (add_count, new_available_size, should_send) where:
+        - add_count: Number of requests to add from intake_queue to pending_batch
+        - new_available_size: Remaining available size in bytes after adding requests
+        - should_send: Whether the batch should be sent now
+    """
+    add_count = 0
+    current_count = len(batch.requests)
+    available_count = max_request_count - current_count
+    available_size = batch.available_size
+    batch_full = available_count <= 0 or available_size <= 0
+
+    for request in intake_queue:
+        if batch_full:
+            break
+
+        # TODO: DO NOT MERGE
+        # This is just for debugging to allow breaking into multiple batches
+        if current_count + add_count >= min_request_count:
+            break
+
+        request_size = len(
+            json.dumps(sanitize_notgiven(request.request), separators=(",", ":"))
+        )
+
+        if request_size > available_size:
+            if current_count + add_count == 0:
+                raise ValueError(
+                    f"Single request size {request_size} exceeds maximum size {available_size}."
+                )
+            batch_full = True
+        else:
+            # Request fits, add it
+            add_count += 1
+            available_size -= request_size
+            available_count -= 1
+            batch_full = available_count <= 0
+
+    should_send = (
+        batch_full
+        or ((new_count := current_count + add_count) >= min_request_count)
+        or (time.time() > batch.timeout and new_count > 0)
+    )
+
+    return add_count, available_size, should_send

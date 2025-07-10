@@ -231,7 +231,8 @@ async def test_anthropic_batch(mocker: MockerFixture):
                 assert model._batcher._inflight_batches == {}  # pyright: ignore[reportPrivateUsage]
                 assert model._batcher._is_batch_worker_running  # pyright: ignore[reportPrivateUsage]
                 assert (
-                    model._batcher._next_batch and len(model._batcher._next_batch) == 1
+                    model._batcher._next_batch
+                    and len(model._batcher._next_batch.requests) == 1
                 )  # pyright: ignore[reportPrivateUsage]
 
                 mock_batches_create.assert_not_awaited()
