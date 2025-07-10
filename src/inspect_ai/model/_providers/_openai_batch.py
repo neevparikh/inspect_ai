@@ -2,6 +2,7 @@ import functools
 import json
 import random
 import tempfile
+from itertools import chain
 from logging import getLogger
 from typing import Any, Literal, TypedDict
 
@@ -41,7 +42,7 @@ class OpenAIBatcher(Batcher[ChatCompletion, CompletedBatchInfo]):
             max_batch_request_count=50000,
             max_batch_size_mb=200,
         )
-        self.client = client
+        self._client = client
         self._retry_config = retry_config
 
     async def _create_batch(self, batch: list[BatchRequest[ChatCompletion]]) -> str:
@@ -76,7 +77,7 @@ class OpenAIBatcher(Batcher[ChatCompletion, CompletedBatchInfo]):
                 temp_file.flush()
                 temp_file.seek(0)
 
-                batch_file = await self.client.files.create(
+                batch_file = await self._client.files.create(
                     file=temp_file.file,
                     purpose="batch",
                     extra_headers=extra_headers or None,
@@ -96,7 +97,7 @@ class OpenAIBatcher(Batcher[ChatCompletion, CompletedBatchInfo]):
                     ),
                 )
 
-            batch_info = await self.client.batches.create(
+            batch_info = await self._client.batches.create(
                 input_file_id=batch_file.id,
                 completion_window="24h",
                 endpoint=endpoint,
@@ -109,7 +110,7 @@ class OpenAIBatcher(Batcher[ChatCompletion, CompletedBatchInfo]):
     async def _check_batch(
         self, batch: Batch[ChatCompletion]
     ) -> tuple[int, int, (CompletedBatchInfo | None)]:
-        batch_info = await self.client.batches.retrieve(batch.id)
+        batch_info = await self._client.batches.retrieve(batch.id)
 
         # TODO: Is it bogus to return 0, 0 when request_counts isn't available
         completed, failed = (
@@ -117,6 +118,8 @@ class OpenAIBatcher(Batcher[ChatCompletion, CompletedBatchInfo]):
             if batch_info.request_counts
             else (0, 0)
         )
+
+        print(f"\tcheck result: {batch_info.status}")
 
         if batch_info.status not in {"completed", "failed", "cancelled", "expired"}:
             return (completed, failed, None)
@@ -142,28 +145,29 @@ class OpenAIBatcher(Batcher[ChatCompletion, CompletedBatchInfo]):
         self,
         batch: Batch[ChatCompletion],
         completion_info: CompletedBatchInfo,
-    ) -> None:
+    ) -> dict[str, ChatCompletion | Exception]:
         result_uris = completion_info["result_uris"]
 
         @retry(**self._retry_config)
-        async def _results() -> None:
-            await tg_collect(
+        async def _results() -> list[dict[str, ChatCompletion | Exception]]:
+            return await tg_collect(
                 [
-                    functools.partial(self._handle_batch_result_file, batch, file_id)
+                    functools.partial(self._handle_batch_result_file, file_id)
                     for file_id in result_uris
                 ]
             )
 
-        await _results()
+        return dict(
+            chain.from_iterable(file_result.items() for file_result in await _results())
+        )
 
     async def _handle_batch_result_file(
-        self,
-        batch: Batch[ChatCompletion],
-        file_id: str,
-    ) -> None:
+        self, file_id: str
+    ) -> dict[str, ChatCompletion | Exception]:
         # TODO: Add error handling so that if one uri fails, the others can
         # still succeed
-        batch_file = await self.client.files.content(file_id)
+        results: dict[str, ChatCompletion | Exception] = {}
+        batch_file = await self._client.files.content(file_id)
         for line in (await batch_file.aread()).decode().splitlines():
             result: dict[str, Any] = json.loads(line)
             request_id = result.pop("custom_id")
@@ -173,14 +177,15 @@ class OpenAIBatcher(Batcher[ChatCompletion, CompletedBatchInfo]):
                 )
                 continue
 
-            batch_request = batch.requests.pop(request_id)
-            await batch_request.result_stream.send(
+            # Store the result in the dictionary instead of sending to result_stream
+            results[request_id] = (
                 ChatCompletion.model_validate(result["response"]["body"])
                 if (error := result.get("error")) is None
-                else self.client._make_status_error_from_response(  # pyright: ignore[reportPrivateUsage]
+                else self._client._make_status_error_from_response(  # pyright: ignore[reportPrivateUsage]
                     httpx.Response(status_code=error["code"], text=error["message"])
                 )
             )
+        return results
 
     def _get_request_failed_error(
         self, request: BatchRequest[ChatCompletion]

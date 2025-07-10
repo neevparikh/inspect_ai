@@ -38,6 +38,6 @@ def biology_qa() -> Task:
             generate(),
         ],
         # TODO: TESTING ONLY. DON'T MERGE
-        config=GenerateConfig(batch=3),
+        config=GenerateConfig(batch=5),
         scorer=model_graded_qa(),
     )
