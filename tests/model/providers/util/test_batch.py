@@ -107,7 +107,7 @@ class FakeBatcher(Batcher[str, CompletedBatchInfo]):
         (False, "test-batch-0"),
     ),
 )
-async def test_batcher_safe_create_batch(
+async def test_batcher_wrapped_create_batch(
     mocker: MockerFixture, has_error: bool, expected_batch_id: str | None
 ):
     batcher = FakeBatcher(mocker)
@@ -121,12 +121,12 @@ async def test_batcher_safe_create_batch(
     ]
 
     if has_error:
-        # When there's an error, _safe_create_batch should raise the exception
+        # When there's an error, _wrapped_create_batch should raise the exception
         with pytest.raises(Exception, match="Test error"):
-            await batcher._safe_create_batch(batch_requests)  # pyright: ignore[reportPrivateUsage]
+            await batcher._wrapped_create_batch(batch_requests)  # pyright: ignore[reportPrivateUsage]
     else:
-        # When there's no error, _safe_create_batch should return the batch_id
-        batch_id = await batcher._safe_create_batch(batch_requests)  # pyright: ignore[reportPrivateUsage]
+        # When there's no error, _wrapped_create_batch should return the batch_id
+        batch_id = await batcher._wrapped_create_batch(batch_requests)  # pyright: ignore[reportPrivateUsage]
         assert batch_id == expected_batch_id
 
     batcher.mock_create_batch.assert_awaited_once_with(batch_requests)
@@ -174,7 +174,7 @@ async def test_batcher_safe_create_batch(
         # ),
     ),
 )
-async def test_batcher_safe_check_batch(
+async def test_batcher_wrapped_check_batch(
     mocker: MockerFixture,
     check_call_result: CompletedBatchInfo | None,
     retry_count: int,
@@ -200,7 +200,7 @@ async def test_batcher_safe_check_batch(
     else:
         batcher.mock_check_batch.return_value = check_call_result
 
-    result = await batcher._safe_check_batch(batch)  # pyright: ignore[reportPrivateUsage]
+    result = await batcher._wrapped_check_batch(batch)  # pyright: ignore[reportPrivateUsage]
     completed, failed, completion_info = (
         (result[0], result[1], result[2]) if result else (0, 0, None)
     )
@@ -233,7 +233,7 @@ async def test_batcher_safe_check_batch(
         pytest.param(True, 2, True, id="error-fail"),
     ),
 )
-async def test_batcher_safe_handle_batch_result(
+async def test_batcher_wrapped_handle_batch_result(
     mocker: MockerFixture,
     has_error: bool,
     retry_count: int,
@@ -256,7 +256,7 @@ async def test_batcher_safe_handle_batch_result(
     if expected_error:
         batcher.mock_handle_batch_result.side_effect = expected_error
 
-    await batcher._safe_handle_batch_result(batch, completion_info)  # pyright: ignore[reportPrivateUsage]
+    await batcher._wrapped_handle_batch_result(batch, completion_info)  # pyright: ignore[reportPrivateUsage]
 
     batcher.mock_handle_batch_result.assert_awaited_once_with(batch, completion_info)
     for idx_request, request in enumerate(batch.requests.values()):

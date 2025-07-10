@@ -151,7 +151,7 @@ class Batcher(Generic[ResponseT, CompletedBatchInfoT]):
         )
 
     async def _check_inflight_batch(self, batch: Batch[ResponseT]) -> None:
-        check_result = await self._safe_check_batch(batch)
+        check_result = await self._wrapped_check_batch(batch)
         if not check_result:
             return
 
@@ -161,7 +161,7 @@ class Batcher(Generic[ResponseT, CompletedBatchInfoT]):
         if completed_info is None:
             return
 
-        await self._safe_handle_batch_result(batch, completed_info)
+        await self._wrapped_handle_batch_result(batch, completed_info)
 
     async def _fail_and_cleanup_inflight_batch(
         self,
@@ -211,7 +211,7 @@ class Batcher(Generic[ResponseT, CompletedBatchInfoT]):
             batch_requests = self._next_batch.requests
             self._next_batch = None
 
-            batch_id = await self._safe_create_batch(batch_requests)
+            batch_id = await self._wrapped_create_batch(batch_requests)
 
             self._inflight_batches[batch_id] = Batch(
                 id=batch_id,
@@ -221,13 +221,12 @@ class Batcher(Generic[ResponseT, CompletedBatchInfoT]):
 
         return False
 
-    # These _safe_* methods are intended to wrap the abstract methods with the appropriate
-    # error handling logic consistent with the batch algorithm. This allows the
-    # code above to not worry about try/catch'ing the abstract methods.
-    # Any exception that escapes a _safe_* method should be considered a coding
-    # error and bring down the eval.
+    # These _wrapped_* methods are intended to wrap the abstract methods with the
+    # appropriate error handling logic consistent with the batch algorithm. This
+    # allows the code above to not worry about try/catch'ing the abstract methods.
+    # Any exception that escapes a _wrapped_* method will bring down the eval.
 
-    async def _safe_create_batch(self, batch: list[BatchRequest[ResponseT]]) -> str:
+    async def _wrapped_create_batch(self, batch: list[BatchRequest[ResponseT]]) -> str:
         try:
             result = await self._create_batch(batch)
             print(f"Created batch {result} with {len(batch)} requests")
@@ -239,7 +238,7 @@ class Batcher(Generic[ResponseT, CompletedBatchInfoT]):
             await self._fail_all_requests(batch, e)
             raise
 
-    async def _safe_check_batch(
+    async def _wrapped_check_batch(
         self, batch: Batch[ResponseT]
     ) -> tuple[int, int, (CompletedBatchInfoT | None)] | None:
         try:
@@ -256,7 +255,7 @@ class Batcher(Generic[ResponseT, CompletedBatchInfoT]):
                 await self._fail_and_cleanup_inflight_batch(batch, e)
             return None
 
-    async def _safe_handle_batch_result(
+    async def _wrapped_handle_batch_result(
         self,
         batch: Batch[ResponseT],
         completion_info: CompletedBatchInfoT,
