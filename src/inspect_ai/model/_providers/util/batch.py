@@ -111,10 +111,10 @@ class Batcher(Generic[ResponseT, CompletedBatchInfoT]):
 
                 await anyio.sleep(self._tick)
 
-            print("Batch worker finished processing...exiting")
+            logger.info("Batch worker finished processing...exiting")
             self._is_batch_worker_running = False
         finally:
-            print("Batch worker finally...exiting")
+            logger.info("Batch worker finally...exiting")
 
     def _is_there_work_to_do(self) -> bool:
         result = bool(
@@ -122,7 +122,7 @@ class Batcher(Generic[ResponseT, CompletedBatchInfoT]):
             or self._intake_queue
             or (self._next_batch.requests if self._next_batch else False)
         )
-        print(
+        logger.info(
             f"_is_there_work_to_do: {result} inflight batches: {len(self._inflight_batches)} intake queue: {len(self._intake_queue)} _next_batch.requests: {len(self._next_batch.requests) if self._next_batch else 0}"
         )
         return result
@@ -145,7 +145,7 @@ class Batcher(Generic[ResponseT, CompletedBatchInfoT]):
             self._inflight_batches.values(),
             (0, 0, 0),
         )
-        print(
+        logger.info(
             f"Inflight batches: {len(self._inflight_batches)}, "
             f"pending/completed/failed requests: {total_requests - total_completed - total_failed}/{total_completed}/{total_failed}"
         )
@@ -229,10 +229,10 @@ class Batcher(Generic[ResponseT, CompletedBatchInfoT]):
     async def _wrapped_create_batch(self, batch: list[BatchRequest[ResponseT]]) -> str:
         try:
             result = await self._create_batch(batch)
-            print(f"Created batch {result} with {len(batch)} requests")
+            logger.info(f"Created batch {result} with {len(batch)} requests")
             return result
         except Exception as e:
-            print(
+            logger.info(
                 f"Error creating batch, failing all {len(batch)} requests in batch. Error: {e}"
             )
             await self._fail_all_requests(batch, e)
@@ -270,7 +270,7 @@ class Batcher(Generic[ResponseT, CompletedBatchInfoT]):
                 await batch.requests[request_id].result_stream.send(response)
             del self._inflight_batches[batch.id]
         except Exception as e:
-            print(
+            logger.info(
                 f"Batch {batch.id} failed after retries, failing all {len(batch.requests)} requests in batch",
             )
             await self._fail_and_cleanup_inflight_batch(batch, e)
