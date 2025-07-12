@@ -148,7 +148,14 @@ def _get_individual_result(
                 error_class = anthropic.InternalServerError
         response = error_class(
             message=message,
-            response=httpx.Response(status_code=500, text=message),
+            response=httpx.Response(
+                status_code=500,
+                text=message,
+                request=httpx.Request(
+                    method="POST",
+                    url="https://api.anthropic.com/v1/messages/batches/results",
+                ),
+            ),
             body=None,
         )
         response.response.status_code = response.status_code
@@ -157,14 +164,14 @@ def _get_individual_result(
         return APIConnectionError(
             request=httpx.Request(
                 method="POST",
-                url="https://api.anthropic.com/v1/messages/batches",
+                url="https://api.anthropic.com/v1/messages/batches/results",
             )
         )
     elif individual_response.result.type == "expired":
         return APITimeoutError(
             request=httpx.Request(
                 method="POST",
-                url="https://api.anthropic.com/v1/messages/batches",
+                url="https://api.anthropic.com/v1/messages/batches/results",
             )
         )
     else:
