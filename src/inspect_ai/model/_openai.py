@@ -675,6 +675,10 @@ class OpenAIAsyncHttpxClient(httpx.AsyncClient):
         # This is based on the openai DefaultAsyncHttpxClient:
         # https://github.com/openai/openai-python/commit/347363ed67a6a1611346427bb9ebe4becce53f7e
         kwargs.setdefault("timeout", DEFAULT_TIMEOUT)
+        limits = httpx.Limits(
+            max_connections=2000,
+            max_keepalive_connections=200,
+        )
         kwargs.setdefault("limits", DEFAULT_CONNECTION_LIMITS)
         kwargs.setdefault("follow_redirects", True)
 
