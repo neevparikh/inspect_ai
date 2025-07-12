@@ -356,7 +356,7 @@ class OpenAIAPI(ModelAPI):
     @override
     def should_retry(self, ex: BaseException) -> bool:
         if isinstance(ex, RateLimitError):
-            logger.info(f"rate limit {ex.response.headers}")
+            logger.info(f"rate limit {ex.response.headers}\n{ex}")
             # Do not retry on these rate limit errors
             # The quota exceeded one is related to monthly account quotas.
             if "You exceeded your current quota" in ex.message:
