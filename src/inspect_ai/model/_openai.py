@@ -6,7 +6,6 @@ from typing import Any, Literal
 
 import httpx
 from openai import (
-    DEFAULT_CONNECTION_LIMITS,
     DEFAULT_TIMEOUT,
     APIStatusError,
     APITimeoutError,
@@ -679,7 +678,7 @@ class OpenAIAsyncHttpxClient(httpx.AsyncClient):
             max_connections=2000,
             max_keepalive_connections=200,
         )
-        kwargs.setdefault("limits", DEFAULT_CONNECTION_LIMITS)
+        kwargs.setdefault("limits", limits)
         kwargs.setdefault("follow_redirects", True)
 
         # This is based on the anthrpopic changes for claude 3.7:
@@ -696,8 +695,7 @@ class OpenAIAsyncHttpxClient(httpx.AsyncClient):
             socket_options.append((socket.IPPROTO_TCP, TCP_KEEPIDLE, 60))
 
         kwargs["transport"] = httpx.AsyncHTTPTransport(
-            limits=DEFAULT_CONNECTION_LIMITS,
-            socket_options=socket_options,
+            limits=limits, socket_options=socket_options, retries=5
         )
 
         super().__init__(**kwargs)
