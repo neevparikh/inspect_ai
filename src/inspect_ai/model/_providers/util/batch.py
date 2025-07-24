@@ -5,7 +5,11 @@ import sys
 import time
 import uuid
 from abc import abstractmethod
+from logging import getLogger
 from typing import Any, Generic, TypeVar
+
+logger = getLogger(__name__)
+
 
 import anyio
 import anyio.abc
@@ -144,7 +148,7 @@ class Batcher(Generic[ResponseT, CompletedBatchInfoT]):
                 if self._inflight_batches
                 else 0
             )
-            print(
+            logger.info(
                 f"Current batches: {len(self._inflight_batches)}, "
                 f"requests (pending/completed/failed requests): {total - completed - failed}/{completed}/{failed}, "
                 f"batch age (avg/max): {format_progress_time(avg_age, False)}/{format_progress_time(max_age, False)}"
@@ -181,7 +185,7 @@ class Batcher(Generic[ResponseT, CompletedBatchInfoT]):
         batch_requests: list[BatchRequest[ResponseT]],
         error: Exception,
     ) -> None:
-        print(message)
+        logger.info(message)
         for request in batch_requests:
             try:
                 await request.result_stream.send(error)
@@ -235,7 +239,7 @@ class Batcher(Generic[ResponseT, CompletedBatchInfoT]):
     async def _wrapped_create_batch(self, batch: list[BatchRequest[ResponseT]]) -> str:
         try:
             result = await self._create_batch(batch)
-            print(f"Created batch {result} with {len(batch)} requests")
+            logger.info(f"Created batch {result} with {len(batch)} requests")
             return result
         except Exception as e:
             await self._fail_all_requests(
@@ -254,7 +258,7 @@ class Batcher(Generic[ResponseT, CompletedBatchInfoT]):
             return result
         except Exception as e:
             batch.consecutive_check_failure_count += 1
-            print(
+            logger.info(
                 f"Error {batch.consecutive_check_failure_count} checking batch {batch.id}. Error: {e}"
             )
             if (
@@ -275,11 +279,11 @@ class Batcher(Generic[ResponseT, CompletedBatchInfoT]):
     ) -> None:
         try:
             results = await self._handle_batch_result(batch, completion_info)
-            print(f"Batch {batch.id} completed")
+            logger.info(f"Batch {batch.id} completed")
             # TODO: We don't have any evidence that this actually happens. I
             # think we should just get rid of the code.
             if len(results) != len(batch.requests):
-                print(
+                logger.info(
                     f"Batch {batch.id} returned {len(results)} results, expected {len(batch.requests)}",
                 )
             for request_id, response in results.items():
